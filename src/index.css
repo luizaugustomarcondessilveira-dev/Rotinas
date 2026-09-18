@@ -1,0 +1,91 @@
+@import "tailwindcss";
+
+:root {
+  --theme-color: #081534;
+  --theme-color-hover: #16254c;
+  --theme-color-light: #dae2ff;
+}
+
+@theme {
+  --color-primary: var(--theme-color, #081534);
+  --color-primary-container: var(--theme-color-hover, #1e2a4a);
+  --color-on-primary: #ffffff;
+  --color-on-primary-container: #8691b7;
+  --color-primary-fixed: #dae2ff;
+  --color-primary-fixed-dim: #bac5ee;
+  --color-on-primary-fixed: #0d1a39;
+  --color-on-primary-fixed-variant: #3a4667;
+
+  --color-secondary: #855300;
+  --color-secondary-container: #fea619;
+  --color-on-secondary: #ffffff;
+  --color-on-secondary-container: #684000;
+  --color-secondary-fixed: #ffddb8;
+  --color-secondary-fixed-dim: #ffb95f;
+  --color-on-secondary-fixed: #2a1700;
+  --color-on-secondary-fixed-variant: #653e00;
+
+  --color-tertiary: #001b0f;
+  --color-tertiary-container: #003220;
+  --color-on-tertiary: #ffffff;
+  --color-on-tertiary-container: #00a673;
+  --color-tertiary-fixed: #6ffbbe;
+  --color-tertiary-fixed-dim: #4edea3;
+  --color-on-tertiary-fixed: #002113;
+  --color-on-tertiary-fixed-variant: #005236;
+
+  --color-surface: #f7f9fb;
+  --color-surface-dim: #d8dadc;
+  --color-surface-bright: #f7f9fb;
+  --color-surface-variant: #e0e3e5;
+  --color-surface-container-lowest: #ffffff;
+  --color-surface-container-low: #f2f4f6;
+  --color-surface-container: #eceef0;
+  --color-surface-container-high: #e6e8ea;
+  --color-surface-container-highest: #e0e3e5;
+  --color-on-surface: #191c1e;
+  --color-on-surface-variant: #45464e;
+  --color-outline: #76777f;
+  --color-outline-variant: #c6c6cf;
+  --color-background: #f7f9fb;
+  --color-on-background: #191c1e;
+
+  --color-error: #ba1a1a;
+  --color-error-container: #ffdad6;
+  --color-on-error-container: #93000a;
+
+  --font-sans: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
+}
+
+body {
+  font-family: var(--font-sans);
+}
+
+.material-symbols-outlined {
+  font-family: 'Material Symbols Outlined';
+  font-weight: normal;
+  font-style: normal;
+  font-size: 24px;
+  line-height: 1;
+  letter-spacing: normal;
+  text-transform: none;
+  display: inline-block;
+  white-space: nowrap;
+  word-wrap: normal;
+  direction: ltr;
+  -webkit-font-feature-settings: 'liga';
+  -webkit-font-smoothing: antialiased;
+}
+
+.theme-bg {
+  background-color: var(--theme-color, #081534) !important;
+}
+
+.theme-text {
+  color: var(--theme-color, #081534) !important;
+}
+
+.theme-border {
+  border-color: var(--theme-color, #081534) !important;
+}
+

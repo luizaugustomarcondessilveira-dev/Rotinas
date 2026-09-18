@@ -1,0 +1,6 @@
+{
+  "name": "Rotinas da Família",
+  "description": "Aplicativo para gestão de rotinas e incentivos familiares, com auditoria de pais e painel para filhos.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
