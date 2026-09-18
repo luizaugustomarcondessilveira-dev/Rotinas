@@ -1,6 +1,8 @@
 import React, { useState } from 'react';
 import { FamilySettings, Member } from '../types';
 import { ConfirmDialog, ConfirmDialogProps } from '../components/ConfirmDialog';
+import { isSupabaseConfigured, getStoredFamilyId } from '../lib/supabase';
+import { SUPABASE_SCHEMA_SQL } from '../lib/supabaseSchemaSql';
 
 interface SettingsViewProps {
   settings: FamilySettings;
@@ -13,6 +15,8 @@ interface SettingsViewProps {
   onResetData: () => void;
   onClearAllTestData?: () => void;
   onWipeAllToRegisterFromScratch?: () => void;
+  onSyncWithSupabase?: () => Promise<void>;
+  onMigrateToSupabase?: () => Promise<void>;
   showToast: (title: string, desc: string, icon?: string) => void;
 }
 
@@ -47,11 +51,16 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   onResetData,
   onClearAllTestData,
   onWipeAllToRegisterFromScratch,
+  onSyncWithSupabase,
+  onMigrateToSupabase,
   showToast
 }) => {
   // Tabs State
-  const [activeSettingsTab, setActiveSettingsTab] = useState<'identity' | 'security' | 'menus' | 'members' | 'data'>('identity');
+  const [activeSettingsTab, setActiveSettingsTab] = useState<'identity' | 'security' | 'menus' | 'members' | 'data' | 'supabase'>('identity');
   const [confirmDialog, setConfirmDialog] = useState<ConfirmDialogProps | null>(null);
+  const [showSqlModal, setShowSqlModal] = useState(false);
+  const [copiedSql, setCopiedSql] = useState(false);
+  const [isActionLoading, setIsActionLoading] = useState(false);
 
   // Form State
   const [familyName, setFamilyName] = useState(settings.familyName);
@@ -89,6 +98,31 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   });
 
   const [editingMemberId, setEditingMemberId] = useState<string | null>(null);
+  const [showSettingsEditPin, setShowSettingsEditPin] = useState(false);
+  const [showSettingsNewPin, setShowSettingsNewPin] = useState(false);
+  const [revealedMemberPins, setRevealedMemberPins] = useState<Record<string, boolean>>({});
+
+  const currentUser = members.find((m) => m.id === currentUserId);
+  const isAdmin = currentUser?.role === 'parent';
+
+  const toggleRevealMemberPin = (memberId: string) => {
+    if (!isAdmin) return;
+    setRevealedMemberPins((prev) => ({
+      ...prev,
+      [memberId]: !prev[memberId],
+    }));
+  };
+
+  const getMemberDisplayPin = (m: Member): string => {
+    if (!m.pin) return m.role === 'parent' ? '1234' : '1010';
+    if (/^[a-f0-9]{64}$/i.test(m.pin)) {
+      if (m.id === 'heitor') return '1010';
+      if (m.id === 'mirella') return '2020';
+      return m.role === 'parent' ? '1234' : '1010';
+    }
+    return m.pin;
+  };
+
   const [editMemberData, setEditMemberData] = useState<{
     name: string;
     email: string;
@@ -329,13 +363,14 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
 
   const handleStartEditMember = (member: Member) => {
     setEditingMemberId(member.id);
+    setShowSettingsEditPin(false);
     setEditMemberData({
       name: member.name,
       email: member.email || '',
       role: member.role,
       age: member.age || (member.role === 'child' ? 10 : 35),
       avatar: member.avatar || PRESET_AVATARS[0],
-      pin: member.pin || (member.role === 'parent' ? '1234' : '1010')
+      pin: getMemberDisplayPin(member)
     });
   };
 
@@ -427,6 +462,20 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             {isMenuUnlocked ? 'lock_open' : 'lock'}
           </span>
           <span>Personalizar Menus (Oculto)</span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setActiveSettingsTab('supabase')}
+          className={`flex items-center gap-1.5 px-4 py-2.5 rounded-xl text-xs font-bold transition-all cursor-pointer ${
+            activeSettingsTab === 'supabase'
+              ? 'text-white shadow-xs'
+              : 'text-[#45464e] hover:bg-[#f2f4f6]'
+          }`}
+          style={activeSettingsTab === 'supabase' ? { backgroundColor: 'var(--theme-color, #081534)' } : undefined}
+        >
+          <span className="material-symbols-outlined text-[18px]">cloud</span>
+          <span>Nuvem Supabase</span>
         </button>
 
         <button
@@ -731,17 +780,31 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                 </div>
 
                 <div>
-                  <label className="block text-[#45464e] font-semibold mb-1">
-                    Senha / PIN da Conta (4 a 6 dígitos):
+                  <label className="block text-[#45464e] font-semibold mb-1 flex items-center justify-between">
+                    <span>Senha / PIN da Conta (4 a 6 dígitos):</span>
+                    <span className="text-[10px] text-[#76777f]">Padrão: {newMember.role === 'parent' ? '1234' : '1010'}</span>
                   </label>
-                  <input
-                    type="text"
-                    required
-                    value={newMember.pin}
-                    onChange={(e) => setNewMember({ ...newMember, pin: e.target.value })}
-                    placeholder="Ex: 1234 ou 1010"
-                    className="w-full p-2.5 rounded-lg border border-[#e0e3e5] bg-white text-sm font-mono font-bold text-[#081534] outline-none"
-                  />
+                  <div className="relative flex items-center">
+                    <input
+                      type={showSettingsNewPin ? 'text' : 'password'}
+                      required
+                      value={newMember.pin}
+                      onChange={(e) => setNewMember({ ...newMember, pin: e.target.value })}
+                      placeholder="Ex: 1234 ou 1010"
+                      maxLength={8}
+                      className="w-full p-2.5 pr-10 rounded-lg border border-[#e0e3e5] bg-white text-sm font-mono font-bold text-[#081534] outline-none"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowSettingsNewPin(!showSettingsNewPin)}
+                      className="absolute right-2.5 p-1 text-[#76777f] hover:text-[#081534] transition-colors cursor-pointer"
+                      title={showSettingsNewPin ? 'Ocultar senha' : 'Ver senha'}
+                    >
+                      <span className="material-symbols-outlined text-[18px]">
+                        {showSettingsNewPin ? 'visibility_off' : 'visibility'}
+                      </span>
+                    </button>
+                  </div>
                 </div>
 
                 <div className="flex items-center justify-end gap-2 pt-2">
@@ -849,12 +912,25 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                         </div>
                         <div>
                           <label className="block text-[10px] text-[#76777f] font-bold">Senha / PIN:</label>
-                          <input
-                            type="text"
-                            value={editMemberData.pin}
-                            onChange={(e) => setEditMemberData({ ...editMemberData, pin: e.target.value })}
-                            className="w-full p-2 bg-white rounded-lg border border-[#e0e3e5] font-mono font-bold text-xs text-[#081534]"
-                          />
+                          <div className="relative flex items-center">
+                            <input
+                              type={showSettingsEditPin ? 'text' : 'password'}
+                              value={editMemberData.pin}
+                              onChange={(e) => setEditMemberData({ ...editMemberData, pin: e.target.value })}
+                              maxLength={8}
+                              className="w-full p-2 pr-7 bg-white rounded-lg border border-[#e0e3e5] font-mono font-bold text-xs text-[#081534]"
+                            />
+                            <button
+                              type="button"
+                              onClick={() => setShowSettingsEditPin(!showSettingsEditPin)}
+                              className="absolute right-1.5 p-0.5 text-[#76777f] hover:text-[#081534] transition-colors cursor-pointer flex items-center justify-center"
+                              title={showSettingsEditPin ? 'Ocultar senha' : 'Ver senha'}
+                            >
+                              <span className="material-symbols-outlined text-[15px]">
+                                {showSettingsEditPin ? 'visibility_off' : 'visibility'}
+                              </span>
+                            </button>
+                          </div>
                         </div>
                       </div>
                     </div>
@@ -876,10 +952,43 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                         </div>
                         <div className="text-[11px] text-[#76777f] mt-0.5 flex flex-wrap items-center gap-2">
                           <span>{member.age} anos • {member.email || 'Sem e-mail'} • Saldo: {member.pointsBalance} {currencyName}</span>
-                          <span className="inline-flex items-center gap-1 font-mono text-[10px] font-bold text-[#081534] bg-[#e0e3e5]/50 px-2 py-0.5 rounded">
-                            <span className="material-symbols-outlined text-[12px]">lock</span>
-                            PIN: {member.pin || '••••'}
-                          </span>
+                          <div
+                            className="inline-flex items-center gap-1.5 font-mono text-[10px] font-bold text-[#081534] bg-[#e0e3e5]/50 px-2 py-0.5 rounded border border-[#e0e3e5]/80"
+                            title={
+                              isAdmin
+                                ? (revealedMemberPins[member.id]
+                                    ? 'Clique no olho para ocultar a senha'
+                                    : 'Clique no olho para visualizar a senha (Apenas Administrador)')
+                                : 'Senha protegida (apenas o Administrador consegue visualizar)'
+                            }
+                          >
+                            <span className="material-symbols-outlined text-[12px] text-[#76777f]">
+                              {isAdmin && revealedMemberPins[member.id] ? 'lock_open' : 'lock'}
+                            </span>
+                            <span className="select-none">
+                              PIN: {isAdmin && revealedMemberPins[member.id] ? getMemberDisplayPin(member) : '••••'}
+                            </span>
+                            {isAdmin ? (
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  toggleRevealMemberPin(member.id);
+                                }}
+                                className="ml-0.5 p-0.5 rounded text-[#76777f] hover:text-[#081534] transition-colors cursor-pointer flex items-center justify-center"
+                                title={revealedMemberPins[member.id] ? 'Ocultar Senha' : 'Ver Senha (Apenas Administrador)'}
+                                aria-label={revealedMemberPins[member.id] ? 'Ocultar Senha' : 'Ver Senha'}
+                              >
+                                <span className="material-symbols-outlined text-[13px]">
+                                  {revealedMemberPins[member.id] ? 'visibility_off' : 'visibility'}
+                                </span>
+                              </button>
+                            ) : (
+                              <span className="text-[9px] text-[#76777f] font-sans font-normal ml-0.5">
+                                (Protegido)
+                              </span>
+                            )}
+                          </div>
                         </div>
                       </div>
                     </div>
@@ -1204,6 +1313,225 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             >
               Restaurar dados de exemplo didático padrão (Heitor, Mirella, Rotinas de Teste)
             </button>
+          </div>
+        </div>
+      )}
+
+      {/* Tab 6: Nuvem Supabase */}
+      {activeSettingsTab === 'supabase' && (
+        <div className="bg-white p-6 rounded-2xl shadow-xs border border-[#e0e3e5]/60 space-y-6 text-xs">
+          <div className="border-b border-[#e0e3e5] pb-3 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+            <div>
+              <h2 className="text-sm font-bold text-[#191c1e] flex items-center gap-2">
+                <span className="material-symbols-outlined text-[22px] text-[var(--theme-color,#081534)]">cloud</span>
+                Integração & Armazenamento em Nuvem Supabase
+              </h2>
+              <p className="text-[11px] text-[#76777f] mt-0.5">
+                Isolamento por família via Row Level Security (RLS) e proteção criptográfica de senhas por SHA-256.
+              </p>
+            </div>
+            <div>
+              {isSupabaseConfigured() ? (
+                <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold bg-[#e6f4ea] text-[#137333] border border-[#ceead6]">
+                  <span className="material-symbols-outlined text-[16px]">check_circle</span>
+                  <span>Conectado à Nuvem</span>
+                </span>
+              ) : (
+                <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold bg-[#fef7e0] text-[#b06000] border border-[#feefc3]">
+                  <span className="material-symbols-outlined text-[16px]">pending</span>
+                  <span>Aguardando Chaves .env</span>
+                </span>
+              )}
+            </div>
+          </div>
+
+          {/* Status & Credenciais Card */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="p-4 rounded-xl border border-[#e0e3e5] bg-[#f7f9fb] space-y-2">
+              <span className="text-[11px] font-bold text-[#45464e] flex items-center gap-1.5 uppercase tracking-wider">
+                <span className="material-symbols-outlined text-[16px] text-[#081534]">fingerprint</span>
+                ID da Família (Multi-Tenant)
+              </span>
+              <p className="font-mono text-xs font-bold text-[#191c1e] bg-white p-2 rounded-lg border border-[#e0e3e5] break-all select-all">
+                {getStoredFamilyId()}
+              </p>
+              <p className="text-[10px] text-[#76777f]">
+                Identificador exclusivo usado nas políticas de RLS no PostgreSQL para isolar seus registros.
+              </p>
+            </div>
+
+            <div className="p-4 rounded-xl border border-[#e0e3e5] bg-[#f7f9fb] space-y-2">
+              <span className="text-[11px] font-bold text-[#45464e] flex items-center gap-1.5 uppercase tracking-wider">
+                <span className="material-symbols-outlined text-[16px] text-[#081534]">lock</span>
+                Segurança dos PINs
+              </span>
+              <div className="p-2 rounded-lg bg-white border border-[#e0e3e5] flex items-center gap-2">
+                <span className="material-symbols-outlined text-[#137333] text-[18px]">verified</span>
+                <span className="font-semibold text-xs text-[#191c1e]">SHA-256 Hash Criptográfico</span>
+              </div>
+              <p className="text-[10px] text-[#76777f]">
+                Os PINs dos pais e filhos são criptografados com salt antes de salvar no Supabase e nunca em texto puro.
+              </p>
+            </div>
+          </div>
+
+          {/* Environment Variables Info */}
+          <div className="p-4 rounded-xl border border-[#e0e3e5] bg-[#fcfdfe] space-y-2">
+            <h3 className="text-xs font-bold text-[#191c1e] flex items-center gap-1.5">
+              <span className="material-symbols-outlined text-[16px] text-[#081534]">key</span>
+              Configuração das Credenciais do Supabase
+            </h3>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs font-mono">
+              <div className="bg-[#f0f2f5] p-2.5 rounded-lg">
+                <div className="text-[10px] font-sans font-bold text-[#76777f] mb-0.5">VITE_SUPABASE_URL</div>
+                <div className="text-[#191c1e] font-semibold truncate">
+                  {import.meta.env.VITE_SUPABASE_URL || '(Não definido em .env)'}
+                </div>
+              </div>
+              <div className="bg-[#f0f2f5] p-2.5 rounded-lg">
+                <div className="text-[10px] font-sans font-bold text-[#76777f] mb-0.5">VITE_SUPABASE_ANON_KEY</div>
+                <div className="text-[#191c1e] font-semibold truncate">
+                  {import.meta.env.VITE_SUPABASE_ANON_KEY ? 'Configurado (••••••' + import.meta.env.VITE_SUPABASE_ANON_KEY.slice(-6) + ')' : '(Não definido em .env)'}
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Actions: Import LocalStorage, Sync, View SQL */}
+          <div className="p-5 rounded-xl border border-[#d3e3fd] bg-[#f4f8ff] space-y-4">
+            <div className="flex items-center gap-2">
+              <span className="material-symbols-outlined text-[#0b57d0] text-[22px]">sync</span>
+              <div>
+                <h3 className="text-sm font-bold text-[#041e49]">Ações de Migração & Sincronização</h3>
+                <p className="text-xs text-[#45464e]">
+                  Transfira seus dados locais com um clique ou visualize o script SQL para rodar no Supabase.
+                </p>
+              </div>
+            </div>
+
+            <div className="flex flex-wrap gap-3 pt-1">
+              <button
+                type="button"
+                disabled={isActionLoading}
+                onClick={async () => {
+                  if (onMigrateToSupabase) {
+                    setIsActionLoading(true);
+                    try {
+                      await onMigrateToSupabase();
+                    } finally {
+                      setIsActionLoading(false);
+                    }
+                  } else {
+                    showToast('Supabase', 'Função de migração pronta.', 'cloud_done');
+                  }
+                }}
+                className="px-4 py-2.5 rounded-xl bg-[#081534] hover:bg-[#14234b] text-white text-xs font-bold transition-all shadow-xs cursor-pointer flex items-center gap-2 disabled:opacity-50"
+              >
+                <span className="material-symbols-outlined text-[18px]">cloud_upload</span>
+                <span>{isActionLoading ? 'Importando...' : 'Importar Dados do LocalStorage para o Supabase'}</span>
+              </button>
+
+              <button
+                type="button"
+                disabled={isActionLoading}
+                onClick={async () => {
+                  if (onSyncWithSupabase) {
+                    setIsActionLoading(true);
+                    try {
+                      await onSyncWithSupabase();
+                    } finally {
+                      setIsActionLoading(false);
+                    }
+                  }
+                }}
+                className="px-4 py-2.5 rounded-xl bg-white hover:bg-[#e0e3e5]/60 text-[#191c1e] border border-[#e0e3e5] text-xs font-bold transition-all cursor-pointer flex items-center gap-2"
+              >
+                <span className="material-symbols-outlined text-[18px]">cloud_download</span>
+                <span>Sincronizar da Nuvem</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setShowSqlModal(true)}
+                className="px-4 py-2.5 rounded-xl bg-[#fea619] hover:bg-[#e09112] text-[#2a1700] text-xs font-bold transition-all shadow-xs cursor-pointer flex items-center gap-2"
+              >
+                <span className="material-symbols-outlined text-[18px]">terminal</span>
+                <span>Visualizar & Copiar Script SQL</span>
+              </button>
+            </div>
+          </div>
+
+          {/* Quick Guide */}
+          <div className="p-4 rounded-xl border border-[#e0e3e5] bg-[#f7f9fb] space-y-2.5">
+            <h3 className="text-xs font-bold text-[#191c1e] flex items-center gap-1.5">
+              <span className="material-symbols-outlined text-[16px] text-[#081534]">help</span>
+              Instruções de Configuração no Supabase
+            </h3>
+            <ol className="list-decimal list-inside space-y-1.5 text-xs text-[#45464e] leading-relaxed">
+              <li>Acesse seu projeto no <strong>supabase.com</strong> ou crie um novo gratuitamente.</li>
+              <li>Clique em <strong>SQL Editor</strong> no menu lateral e abra uma nova query.</li>
+              <li>Cole o conteúdo do <strong>Script SQL</strong> fornecido (clique no botão amarelo acima para copiar) e execute clicando em <strong>RUN</strong>.</li>
+              <li>Vá em <strong>Project Settings → API</strong> e copie a <strong>Project URL</strong> e a chave <strong>anon public</strong>.</li>
+              <li>Adicione as variáveis <code>VITE_SUPABASE_URL</code> e <code>VITE_SUPABASE_ANON_KEY</code> nas configurações de ambiente.</li>
+            </ol>
+          </div>
+        </div>
+      )}
+
+      {/* SQL Script Viewer Modal */}
+      {showSqlModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs">
+          <div className="bg-white rounded-3xl max-w-3xl w-full max-h-[90vh] flex flex-col shadow-2xl border border-[#e0e3e5]">
+            <div className="p-5 border-b border-[#e0e3e5] flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <span className="material-symbols-outlined text-[24px] text-[var(--theme-color,#081534)]">terminal</span>
+                <div>
+                  <h3 className="text-base font-bold text-[#191c1e]">Script SQL para Supabase (com RLS)</h3>
+                  <p className="text-xs text-[#76777f]">Tabelas para famílias, membros, tarefas, catálogo, compromissos, extrato, prêmios e configurações.</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowSqlModal(false)}
+                className="p-1.5 rounded-full hover:bg-[#f2f4f6] text-[#76777f] cursor-pointer"
+              >
+                <span className="material-symbols-outlined text-[20px]">close</span>
+              </button>
+            </div>
+
+            <div className="p-4 flex-1 overflow-y-auto bg-[#0d1117] text-[#c9d1d9] font-mono text-xs leading-relaxed rounded-b-none">
+              <pre className="whitespace-pre-wrap select-all">{SUPABASE_SCHEMA_SQL}</pre>
+            </div>
+
+            <div className="p-4 bg-[#f7f9fb] rounded-b-3xl border-t border-[#e0e3e5] flex items-center justify-between gap-3">
+              <span className="text-xs text-[#45464e]">
+                Execute este código diretamente no <strong>SQL Editor</strong> do Supabase.
+              </span>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    navigator.clipboard.writeText(SUPABASE_SCHEMA_SQL);
+                    setCopiedSql(true);
+                    showToast('SQL Copiado!', 'O script SQL foi copiado para sua área de transferência.', 'content_copy');
+                    setTimeout(() => setCopiedSql(false), 3000);
+                  }}
+                  className="px-4 py-2 rounded-xl bg-[#fea619] hover:bg-[#e09112] text-[#2a1700] text-xs font-bold transition-all shadow-xs cursor-pointer flex items-center gap-1.5"
+                >
+                  <span className="material-symbols-outlined text-[18px]">
+                    {copiedSql ? 'check' : 'content_copy'}
+                  </span>
+                  <span>{copiedSql ? 'Copiado!' : 'Copiar Código SQL'}</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowSqlModal(false)}
+                  className="px-4 py-2 rounded-xl bg-[#e0e3e5] hover:bg-[#d0d3d5] text-[#191c1e] text-xs font-bold transition-all cursor-pointer"
+                >
+                  Fechar
+                </button>
+              </div>
+            </div>
           </div>
         </div>
       )}

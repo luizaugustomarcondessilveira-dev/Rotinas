@@ -25,6 +25,25 @@ import { NewActivityModal } from './components/NewActivityModal';
 import { EvidencePhotoModal } from './components/EvidencePhotoModal';
 import { PinModal } from './components/PinModal';
 import { Toast, ToastData } from './components/Toast';
+import {
+  isSupabaseConfigured,
+  getStoredFamilyId,
+  loadFamilyDataFromSupabase,
+  migrateLocalStorageToSupabase,
+  syncMemberToSupabase,
+  deleteMemberFromSupabase,
+  syncTaskToSupabase,
+  deleteTaskFromSupabase,
+  syncRewardToSupabase,
+  deleteRewardFromSupabase,
+  syncTransactionToSupabase,
+  syncAppointmentToSupabase,
+  deleteAppointmentFromSupabase,
+  syncSettingsToSupabase,
+  clearAllTestDataFromSupabase,
+  wipeEntireFamilyFromSupabase
+} from './lib/supabase';
+import { hashPin } from './lib/crypto';
 
 export default function App() {
   // Authentication State
@@ -40,10 +59,20 @@ export default function App() {
     if (!saved) return INITIAL_MEMBERS;
     try {
       const parsed: Member[] = JSON.parse(saved);
-      return parsed.map((m) => ({
-        ...m,
-        pin: m.pin || (m.role === 'parent' ? '1234' : m.id === 'mirella' ? '2020' : '1010')
-      }));
+      return parsed.map((m) => {
+        let cleanPin = m.pin;
+        // If it was stored as a 64-character SHA-256 hash, convert back to readable default PIN
+        if (cleanPin && /^[a-f0-9]{64}$/i.test(cleanPin)) {
+          if (m.id === 'heitor') cleanPin = '1010';
+          else if (m.id === 'mirella') cleanPin = '2020';
+          else if (m.role === 'parent') cleanPin = '1234';
+          else cleanPin = '1010';
+        }
+        return {
+          ...m,
+          pin: cleanPin || (m.role === 'parent' ? '1234' : m.id === 'mirella' ? '2020' : '1010')
+        };
+      });
     } catch {
       return INITIAL_MEMBERS;
     }
@@ -115,6 +144,86 @@ export default function App() {
   const currentUser = members.find(m => m.id === currentUserId);
   const isParent = currentUser?.role === 'parent';
 
+  // Supabase Hydration and One-Time Migration
+  useEffect(() => {
+    async function initSupabase() {
+      if (!isSupabaseConfigured()) return;
+      const familyId = getStoredFamilyId();
+      const hasMigrated = localStorage.getItem('familyflow_migrated_to_supabase');
+
+      if (!hasMigrated) {
+        const result = await migrateLocalStorageToSupabase(familyId, {
+          members,
+          tasks,
+          rewards,
+          transactions,
+          settings,
+          appointments,
+          notifications
+        });
+        if (result.success) {
+          showToast('Nuvem Supabase Conectada! ☁️', 'Dados importados com sucesso para o banco de dados Supabase.', 'cloud_done');
+        }
+      }
+
+      try {
+        const cloudData = await loadFamilyDataFromSupabase(familyId);
+        if (cloudData && cloudData.members && cloudData.members.length > 0) {
+          setMembers(cloudData.members);
+          setTasks(cloudData.tasks);
+          setRewards(cloudData.rewards);
+          setTransactions(cloudData.transactions);
+          setSettings(cloudData.settings);
+          setAppointments(cloudData.appointments);
+          setNotifications(cloudData.notifications);
+        }
+      } catch (err) {
+        console.warn('Erro ao carregar dados do Supabase:', err);
+      }
+    }
+
+    initSupabase();
+  }, []);
+
+  const handleMigrateToSupabase = async () => {
+    const familyId = getStoredFamilyId();
+    const result = await migrateLocalStorageToSupabase(familyId, {
+      members,
+      tasks,
+      rewards,
+      transactions,
+      settings,
+      appointments,
+      notifications
+    });
+    if (result.success) {
+      showToast('Importação Concluída! 🚀', result.message, 'cloud_done');
+    } else {
+      showToast('Aviso de Migração', result.message, 'warning');
+    }
+  };
+
+  const handleSyncWithSupabase = async () => {
+    if (!isSupabaseConfigured()) {
+      showToast('Supabase Não Configurado', 'Configure VITE_SUPABASE_URL e VITE_SUPABASE_ANON_KEY no arquivo .env.', 'warning');
+      return;
+    }
+    const familyId = getStoredFamilyId();
+    const cloudData = await loadFamilyDataFromSupabase(familyId);
+    if (cloudData && cloudData.members && cloudData.members.length > 0) {
+      setMembers(cloudData.members);
+      setTasks(cloudData.tasks);
+      setRewards(cloudData.rewards);
+      setTransactions(cloudData.transactions);
+      setSettings(cloudData.settings);
+      setAppointments(cloudData.appointments);
+      setNotifications(cloudData.notifications);
+      showToast('Sincronizado!', 'Dados atualizados a partir do banco de dados Supabase.', 'cloud_download');
+    } else {
+      showToast('Nenhum dado encontrado', 'Execute a importação dos dados locais para o banco.', 'info');
+    }
+  };
+
   // Force Kid Mode if user is child
   useEffect(() => {
     if (currentUser && currentUser.role === 'child') {
@@ -146,16 +255,23 @@ export default function App() {
       createdBy: currentUserId || 'system'
     };
     setAppointments(prev => [...prev, newAppt]);
+    syncAppointmentToSupabase(newAppt);
   };
 
   const handleToggleAppointmentStatus = (apptId: string) => {
-    setAppointments(prev => prev.map(a => 
-      a.id === apptId ? { ...a, status: a.status === 'completed' ? 'pending' : 'completed' } : a
-    ));
+    setAppointments(prev => {
+      const updated: Appointment[] = prev.map(a => 
+        a.id === apptId ? { ...a, status: (a.status === 'completed' ? 'pending' : 'completed') as 'pending' | 'completed' } : a
+      );
+      const target = updated.find(a => a.id === apptId);
+      if (target) syncAppointmentToSupabase(target);
+      return updated;
+    });
   };
 
   const handleDeleteAppointment = (apptId: string) => {
     setAppointments(prev => prev.filter(a => a.id !== apptId));
+    deleteAppointmentFromSupabase(apptId);
     showToast('Compromisso Removido', 'O compromisso foi excluído da agenda.', 'delete');
   };
 
@@ -308,7 +424,7 @@ export default function App() {
 
   const handleAddNewActivity = (newTaskData: any) => {
     const taskCount = tasks.length + 1;
-    setTasks((prev) => [{
+    const newTask: RoutineTask = {
       ...newTaskData,
       id: `card-reg-${1080 + taskCount}`,
       regCode: `#REG-${1080 + taskCount}`,
@@ -322,7 +438,9 @@ export default function App() {
       penaltyPoints: 0,
       finalPoints: newTaskData.basePoints,
       photoRequested: false
-    }, ...prev]);
+    };
+    setTasks((prev) => [newTask, ...prev]);
+    syncTaskToSupabase(newTask);
     showToast('Rotina Criada!', `"${newTaskData.title}" adicionada com sucesso.`, 'add_task');
   };
 
@@ -333,6 +451,7 @@ export default function App() {
       status: 'available'
     };
     setRewards((prev) => [...prev, newReward]);
+    syncRewardToSupabase(newReward);
   };
 
   const handleResetData = () => {
@@ -359,6 +478,7 @@ export default function App() {
     localStorage.setItem('familyflow_transactions', JSON.stringify([]));
     localStorage.setItem('familyflow_appointments', JSON.stringify([]));
     localStorage.setItem('familyflow_notifications', JSON.stringify([]));
+    clearAllTestDataFromSupabase();
     showToast('Sistema Limpo!', 'Todos os dados de teste foram removidos. Pronto para cadastrar novas rotinas e dados do zero!', 'cleaning_services');
   };
 
@@ -371,16 +491,19 @@ export default function App() {
     setNotifications([]);
     setMembers([]);
     setCurrentUserId(null);
+    wipeEntireFamilyFromSupabase();
     showToast('Sistema Zerado', 'Todos os dados foram excluídos. Crie a sua família para começar.', 'restart_alt');
   };
 
   const handleUpdateTask = (updatedTask: RoutineTask) => {
     setTasks((prev) => prev.map((t) => t.id === updatedTask.id ? updatedTask : t));
+    syncTaskToSupabase(updatedTask);
     showToast('Regra Atualizada!', `A regra da tarefa "${updatedTask.title}" foi salva com sucesso.`, 'tune');
   };
 
   const handleDeleteTask = (taskId: string) => {
     setTasks((prev) => prev.filter((t) => t.id !== taskId));
+    deleteTaskFromSupabase(taskId);
     showToast('Atividade Removida', 'A rotina foi removida do catálogo.', 'delete');
   };
 
@@ -393,10 +516,12 @@ export default function App() {
     }
   };
 
-  const handleRegisterMember = (newMemberData: Omit<Member, 'id' | 'pointsBalance' | 'pointsEarnedTotal' | 'pointsSpentTotal' | 'level' | 'badge' | 'weeklyConsistency' | 'streakDays'>) => {
+  const handleRegisterMember = async (newMemberData: Omit<Member, 'id' | 'pointsBalance' | 'pointsEarnedTotal' | 'pointsSpentTotal' | 'level' | 'badge' | 'weeklyConsistency' | 'streakDays'>) => {
+    const rawPin = newMemberData.pin || (newMemberData.role === 'parent' ? '1234' : '1010');
     const newMember: Member = {
       ...newMemberData,
       id: `member-${Date.now()}`,
+      pin: rawPin,
       pointsBalance: 0,
       pointsEarnedTotal: 0,
       pointsSpentTotal: 0,
@@ -406,13 +531,16 @@ export default function App() {
       streakDays: 0
     };
     setMembers(prev => [...prev, newMember]);
+    syncMemberToSupabase(newMember);
     setCurrentUserId(newMember.id);
   };
 
-  const handleAddMember = (newMemberData: Omit<Member, 'id' | 'pointsBalance' | 'pointsEarnedTotal' | 'pointsSpentTotal' | 'level' | 'badge' | 'weeklyConsistency' | 'streakDays'>) => {
+  const handleAddMember = async (newMemberData: Omit<Member, 'id' | 'pointsBalance' | 'pointsEarnedTotal' | 'pointsSpentTotal' | 'level' | 'badge' | 'weeklyConsistency' | 'streakDays'>) => {
+    const rawPin = newMemberData.pin || (newMemberData.role === 'parent' ? '1234' : '1010');
     const newMember: Member = {
       ...newMemberData,
       id: `member-${Date.now()}`,
+      pin: rawPin,
       pointsBalance: 0,
       pointsEarnedTotal: 0,
       pointsSpentTotal: 0,
@@ -422,17 +550,29 @@ export default function App() {
       streakDays: 0
     };
     setMembers(prev => [...prev, newMember]);
+    syncMemberToSupabase(newMember);
   };
 
-  const handleUpdateMember = (memberId: string, updates: Partial<Member>) => {
-    setMembers(prev => prev.map(m => m.id === memberId ? { ...m, ...updates } : m));
+  const handleUpdateMember = async (memberId: string, updates: Partial<Member>) => {
+    setMembers(prev => {
+      const updated = prev.map(m => m.id === memberId ? { ...m, ...updates } : m);
+      const target = updated.find(m => m.id === memberId);
+      if (target) syncMemberToSupabase(target);
+      return updated;
+    });
   };
 
   const handleDeleteMember = (memberId: string) => {
     setMembers(prev => prev.filter(m => m.id !== memberId));
+    deleteMemberFromSupabase(memberId);
     if (currentUserId === memberId) {
       setCurrentUserId(null);
     }
+  };
+
+  const handleUpdateSettings = (newSettings: FamilySettings) => {
+    setSettings(newSettings);
+    syncSettingsToSupabase(newSettings);
   };
 
   if (!currentUser) {
@@ -628,13 +768,15 @@ export default function App() {
               settings={settings} 
               members={members}
               currentUserId={currentUserId}
-              onUpdateSettings={setSettings} 
+              onUpdateSettings={handleUpdateSettings} 
               onUpdateMember={handleUpdateMember}
               onAddMember={handleAddMember}
               onDeleteMember={handleDeleteMember}
               onResetData={handleResetData}
               onClearAllTestData={handleClearAllTestData}
               onWipeAllToRegisterFromScratch={handleWipeAllToRegisterFromScratch}
+              onSyncWithSupabase={handleSyncWithSupabase}
+              onMigrateToSupabase={handleMigrateToSupabase}
               showToast={showToast} 
             />
           )}

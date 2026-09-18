@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { verifyPin } from '../lib/crypto';
 
 interface PinModalProps {
   isOpen: boolean;
@@ -29,16 +30,18 @@ export const PinModal: React.FC<PinModalProps> = ({
       setError(false);
 
       if (nextPin.length === 4) {
-        if (nextPin === correctPin) {
-          onSuccess();
-          setPin('');
-          onClose();
-        } else {
-          setError(true);
-          setTimeout(() => {
+        verifyPin(nextPin, correctPin).then((isValid) => {
+          if (isValid) {
+            onSuccess();
             setPin('');
-          }, 600);
-        }
+            onClose();
+          } else {
+            setError(true);
+            setTimeout(() => {
+              setPin('');
+            }, 600);
+          }
+        });
       }
     }
   };

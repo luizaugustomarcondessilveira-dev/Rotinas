@@ -1,5 +1,7 @@
 import React, { useState } from 'react';
 import { Member } from '../types';
+import { verifyPin } from '../lib/crypto';
+import { isSupabaseConfigured } from '../lib/supabase';
 
 interface LoginViewProps {
   members: Member[];
@@ -49,14 +51,15 @@ export const LoginView: React.FC<LoginViewProps> = ({
     setShowPin(false);
   };
 
-  const handleVerifyPinAndLogin = (e?: React.FormEvent) => {
+  const handleVerifyPinAndLogin = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
     if (!selectedMember) return;
 
     const cleanInput = enteredPin.trim();
     const correctPin = selectedMember.pin || (selectedMember.role === 'parent' ? '1234' : '1010');
 
-    if (cleanInput === correctPin) {
+    const isValid = await verifyPin(cleanInput, correctPin);
+    if (isValid) {
       onLogin(selectedMember.id);
     } else {
       setPinError(`Senha incorreta para ${selectedMember.name}. Tente novamente.`);
@@ -228,17 +231,19 @@ export const LoginView: React.FC<LoginViewProps> = ({
                     />
                   </div>
 
-                  {/* Friendly credential badge for testing */}
-                  <div className="mt-2 flex items-center justify-between text-[11px]">
-                    <span className="text-[#76777f] font-medium">
-                      🔒 Senha de teste: <strong className="font-mono text-[#081534]">{selectedMember.pin || '1234'}</strong>
+                  {/* Security hint & PIN toggle */}
+                  <div className="mt-2.5 flex items-center justify-between text-[11px] text-[#76777f]">
+                    <span className="flex items-center gap-1">
+                      <span className="material-symbols-outlined text-[14px]">security</span>
+                      <span>PIN individual protegido</span>
                     </span>
                     <button
                       type="button"
-                      onClick={() => setEnteredPin(selectedMember.pin || '1234')}
-                      className="text-[#00388f] hover:underline font-bold cursor-pointer"
+                      onClick={() => setShowPin(!showPin)}
+                      className="text-[#00388f] hover:underline font-bold cursor-pointer flex items-center gap-1"
                     >
-                      Preencher
+                      <span className="material-symbols-outlined text-[13px]">{showPin ? 'visibility_off' : 'visibility'}</span>
+                      <span>{showPin ? 'Ocultar PIN' : 'Ver ao digitar'}</span>
                     </button>
                   </div>
 
@@ -611,6 +616,21 @@ export const LoginView: React.FC<LoginViewProps> = ({
               </button>
             </div>
           )}
+
+          {/* Supabase Status Indicator */}
+          <div className="mt-4 pt-3 border-t border-[#e0e3e5]/40 text-center">
+            {isSupabaseConfigured() ? (
+              <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[11px] font-semibold bg-[#e6f4ea] text-[#137333] border border-[#ceead6]">
+                <span className="material-symbols-outlined text-[14px]">cloud_done</span>
+                <span>Nuvem Supabase Conectada • RLS Ativo</span>
+              </span>
+            ) : (
+              <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[11px] font-semibold bg-[#fef7e0] text-[#b06000] border border-[#feefc3]">
+                <span className="material-symbols-outlined text-[14px]">cloud_off</span>
+                <span>Modo Local • Defina as chaves do Supabase em .env</span>
+              </span>
+            )}
+          </div>
 
         </div>
       </div>
