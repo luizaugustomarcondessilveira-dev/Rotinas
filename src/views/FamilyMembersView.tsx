@@ -55,9 +55,6 @@ export const FamilyMembersView: React.FC<FamilyMembersViewProps> = ({
   const [pin, setPin] = useState('1234');
   const [showEditPin, setShowEditPin] = useState(false);
 
-  // Revealed PINs map (only accessible by Administrator)
-  const [revealedPins, setRevealedPins] = useState<Record<string, boolean>>({});
-
   // Add Member Modal State
   const [isAddingMember, setIsAddingMember] = useState(false);
   const [newName, setNewName] = useState('');
@@ -71,24 +68,6 @@ export const FamilyMembersView: React.FC<FamilyMembersViewProps> = ({
   const currentUser = members.find((m) => m.id === currentUserId);
   const isAdmin = currentUser?.role === 'parent';
 
-  const toggleRevealPin = (memberId: string) => {
-    if (!isAdmin) return;
-    setRevealedPins((prev) => ({
-      ...prev,
-      [memberId]: !prev[memberId],
-    }));
-  };
-
-  const getDisplayPin = (member: Member): string => {
-    if (!member.pin) return member.role === 'parent' ? '1234' : '1010';
-    if (/^[a-f0-9]{64}$/i.test(member.pin)) {
-      if (member.id === 'heitor') return '1010';
-      if (member.id === 'mirella') return '2020';
-      return member.role === 'parent' ? '1234' : '1010';
-    }
-    return member.pin;
-  };
-
   const handleOpenEdit = (member: Member) => {
     setEditingMember(member);
     setName(member.name);
@@ -98,7 +77,7 @@ export const FamilyMembersView: React.FC<FamilyMembersViewProps> = ({
     setBadge(member.badge || 'Novato');
     setEmail(member.email || '');
     setAvatar(member.avatar || '');
-    setPin(getDisplayPin(member));
+    setPin(member.pin || (member.role === 'parent' ? '1234' : '1010'));
     setShowEditPin(false);
   };
 
@@ -409,45 +388,6 @@ export const FamilyMembersView: React.FC<FamilyMembersViewProps> = ({
                     ) : (
                       <span className="text-[11px] text-[#76777f] font-semibold">Administrador</span>
                     )}
-
-                    {/* PIN status badge with admin-only reveal */}
-                    <div
-                      className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-[#f2f4f6] text-[11px] font-mono font-bold text-[#081534] border border-[#e0e3e5]"
-                      title={
-                        isAdmin
-                          ? (revealedPins[member.id]
-                              ? 'Clique no olho para ocultar a senha'
-                              : 'Clique no olho para visualizar a senha deste membro (Exclusivo Administrador)')
-                          : 'Senha protegida (apenas o Administrador consegue visualizar)'
-                      }
-                    >
-                      <span className="material-symbols-outlined text-[13px] text-[#76777f]">
-                        {isAdmin && revealedPins[member.id] ? 'lock_open' : 'lock'}
-                      </span>
-                      <span className="select-none">
-                        PIN: {isAdmin && revealedPins[member.id] ? getDisplayPin(member) : '••••'}
-                      </span>
-                      {isAdmin ? (
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            toggleRevealPin(member.id);
-                          }}
-                          className="p-0.5 rounded hover:bg-[#e0e3e5] text-[#76777f] hover:text-[#081534] transition-colors cursor-pointer flex items-center justify-center"
-                          title={revealedPins[member.id] ? 'Ocultar Senha' : 'Ver Senha (Apenas Administrador)'}
-                          aria-label={revealedPins[member.id] ? 'Ocultar Senha' : 'Ver Senha'}
-                        >
-                          <span className="material-symbols-outlined text-[14px]">
-                            {revealedPins[member.id] ? 'visibility_off' : 'visibility'}
-                          </span>
-                        </button>
-                      ) : (
-                        <span className="text-[9px] text-[#76777f] font-sans font-normal ml-0.5">
-                          (Protegido)
-                        </span>
-                      )}
-                    </div>
                   </div>
 
                   {/* Edit Info Button */}
@@ -653,7 +593,7 @@ export const FamilyMembersView: React.FC<FamilyMembersViewProps> = ({
                       required
                       value={pin}
                       onChange={(e) => setPin(e.target.value)}
-                      placeholder="Ex: 1234 ou 1010"
+                      placeholder="Digite a nova senha (4 a 6 dígitos)"
                       maxLength={8}
                       className="w-full p-2.5 pr-10 rounded-lg border border-[#e0e3e5] text-xs font-mono font-bold text-[#081534] bg-white outline-none focus:border-[#081534]"
                     />
@@ -676,7 +616,7 @@ export const FamilyMembersView: React.FC<FamilyMembersViewProps> = ({
                 )}
                 <span className="text-[10px] text-[#76777f] block">
                   {isAdmin
-                    ? 'Como Administrador, você tem permissão para visualizar e redefinir a senha deste membro.'
+                    ? 'Como Administrador, você pode redefinir a senha deste membro.'
                     : 'Apenas os pais (Administrador) podem redefinir a senha deste membro.'}
                 </span>
               </div>
@@ -839,9 +779,8 @@ export const FamilyMembersView: React.FC<FamilyMembersViewProps> = ({
               </div>
 
               <div>
-                <label className="block text-[#45464e] font-semibold mb-1 flex items-center justify-between">
-                  <span>Senha / PIN de Acesso (4 a 6 dígitos):</span>
-                  <span className="text-[10px] text-[#76777f]">Padrão: {newRole === 'parent' ? '1234' : '1010'}</span>
+                <label className="block text-[#45464e] font-semibold mb-1">
+                  Senha / PIN de Acesso (4 a 6 dígitos):
                 </label>
                 <div className="relative flex items-center">
                   <input
@@ -849,7 +788,7 @@ export const FamilyMembersView: React.FC<FamilyMembersViewProps> = ({
                     required
                     value={newPin}
                     onChange={(e) => setNewPin(e.target.value)}
-                    placeholder="Ex: 1234 ou 1010"
+                    placeholder="Digite a senha (4 a 6 dígitos)"
                     maxLength={8}
                     className="w-full p-2.5 pr-10 rounded-lg border border-[#e0e3e5] text-sm font-mono font-bold text-[#081534] outline-none"
                   />

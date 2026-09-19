@@ -77,7 +77,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           showToast('Código PIN Validado!', 'Autorização de segurança confirmada para esta sessão.', 'lock_open');
           setTimeout(() => setPinBuffer(''), 1000);
         } else {
-          showToast('PIN Incorreto', `O código digitado não confere (padrão: ${pinCode}).`, 'error');
+          showToast('PIN Incorreto', 'O código digitado não confere. Tente novamente.', 'error');
           setTimeout(() => setPinBuffer(''), 600);
         }
       }
@@ -714,7 +714,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             </div>
 
             <div className="flex items-center justify-between text-[11px] text-[#76777f] pt-1">
-              <span>{pinValidated ? 'PIN validado com sucesso' : 'PIN do Pai configurado (1234)'}</span>
+              <span>{pinValidated ? 'PIN validado com sucesso' : 'PIN de Proteção Ativo'}</span>
               <button
                 onClick={() => {
                   showToast('Modo PIN', 'Você pode alterar o código nas Configurações.');

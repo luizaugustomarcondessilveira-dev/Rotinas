@@ -358,9 +358,6 @@ export const LoginView: React.FC<LoginViewProps> = ({
                         <div className="text-[11px] font-semibold text-[#76777f]">
                           {m.role === 'parent' ? 'Pai Administrador' : 'Filho(a)'}
                         </div>
-                        <div className="text-[10px] text-[#00388f] font-mono mt-0.5">
-                          PIN: ••••
-                        </div>
                       </div>
                       <span className="material-symbols-outlined text-[#76777f] group-hover:text-[#081534] text-[18px]">
                         lock
@@ -553,7 +550,8 @@ export const LoginView: React.FC<LoginViewProps> = ({
                     setRegPin(e.target.value);
                     setRegError('');
                   }}
-                  placeholder="Ex: 1234 ou 1010"
+                  placeholder="Digite a senha (4 a 6 dígitos)"
+                  maxLength={8}
                   className="mt-1 appearance-none block w-full px-3.5 py-2.5 border border-[#e0e3e5] rounded-xl shadow-xs font-mono font-bold text-xs tracking-wider focus:outline-none"
                 />
                 <span className="text-[10px] text-[#76777f] mt-1 block">
@@ -602,19 +600,6 @@ export const LoginView: React.FC<LoginViewProps> = ({
                 )}
               </div>
             </form>
-          )}
-
-          {/* Restore Defaults button */}
-          {onRestoreDefaults && !selectedMember && (
-            <div className="mt-6 pt-4 border-t border-[#e0e3e5] text-center">
-              <button
-                type="button"
-                onClick={onRestoreDefaults}
-                className="text-[11px] text-[#76777f] hover:text-[#191c1e] underline cursor-pointer"
-              >
-                Restaurar dados padrão de demonstração (Heitor: 1010, Mirella: 2020, Pais: 1234)
-              </button>
-            </div>
           )}
 
           {/* Supabase Status Indicator */}
