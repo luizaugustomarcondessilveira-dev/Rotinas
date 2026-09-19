@@ -25,7 +25,8 @@ export const LoginView: React.FC<LoginViewProps> = ({
   onRegister,
   onRestoreDefaults
 }) => {
-  const [isRegistering, setIsRegistering] = useState(members.length === 0);
+  const isFamilyEmpty = members.length === 0;
+  const [isRegistering, setIsRegistering] = useState(isFamilyEmpty);
   const [selectedMember, setSelectedMember] = useState<Member | null>(null);
   const [enteredPin, setEnteredPin] = useState('');
   const [showPin, setShowPin] = useState(false);
@@ -43,6 +44,14 @@ export const LoginView: React.FC<LoginViewProps> = ({
   const [age, setAge] = useState(35);
   const [avatar, setAvatar] = useState(PRESET_AVATARS[0]);
   const [regError, setRegError] = useState('');
+
+  // If family has no members, always keep in registration mode
+  React.useEffect(() => {
+    if (members.length === 0) {
+      setIsRegistering(true);
+      setRole('parent');
+    }
+  }, [members.length]);
 
   const handleSelectMember = (member: Member) => {
     setSelectedMember(member);
@@ -108,8 +117,8 @@ export const LoginView: React.FC<LoginViewProps> = ({
   const handleRegisterSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     const cleanEmail = email.trim().toLowerCase();
-    if (cleanEmail && members.some(m => m.email && m.email.toLowerCase() === cleanEmail)) {
-      setRegError('Este e-mail já está cadastrado.');
+    if (cleanEmail && members.some(m => m.email && m.email.trim().toLowerCase() === cleanEmail)) {
+      setRegError('Este e-mail já está cadastrado nesta família.');
       return;
     }
 
@@ -145,14 +154,16 @@ export const LoginView: React.FC<LoginViewProps> = ({
           className="mt-5 text-2xl sm:text-3xl font-extrabold"
           style={{ color: 'var(--theme-color, #081534)' }}
         >
-          Rotinas da Família
+          {isFamilyEmpty ? 'Criar Família e Primeiro Administrador' : 'Rotinas da Família'}
         </h2>
         <p className="mt-2 text-xs sm:text-sm text-[#45464e]">
-          {isRegistering
+          {isFamilyEmpty
+            ? 'Nenhum membro cadastrado ainda. Crie o primeiro perfil de Administrador da Família para começar.'
+            : isRegistering
             ? 'Cadastre um novo perfil de Pai Administrador ou Filho'
             : selectedMember
             ? `Autenticação segura para ${selectedMember.name}`
-            : 'Cada perfil possui sua própria senha e permissões preservadas'}
+            : 'Cada perfil possui sua própria senha e permissões'}
         </p>
       </div>
 

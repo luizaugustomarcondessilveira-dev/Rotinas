@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { ActiveTab, Member, RoutineTask, RewardItem, Transaction, FamilySettings, Appointment, AppNotification } from './types';
 import {
   INITIAL_MEMBERS,
@@ -28,7 +28,10 @@ import { Toast, ToastData } from './components/Toast';
 import {
   isSupabaseConfigured,
   getStoredFamilyId,
+  ensureFamilyExists,
   loadFamilyDataFromSupabase,
+  generateUUID,
+  deduplicateMembers,
   migrateLocalStorageToSupabase,
   syncMemberToSupabase,
   deleteMemberFromSupabase,
@@ -46,67 +49,25 @@ import {
 import { hashPin } from './lib/crypto';
 
 export default function App() {
+  // Global loading state while fetching from cloud (Source of truth)
+  const [isLoading, setIsLoading] = useState<boolean>(true);
+
   // Authentication State
   const [currentUserId, setCurrentUserId] = useState<string | null>(() => localStorage.getItem('familyflow_user'));
 
-  // Persistent state with localStorage
+  // Persistent state with localStorage fallback
   const [activeTab, setActiveTab] = useState<ActiveTab>(() => {
     return (localStorage.getItem('familyflow_tab') as ActiveTab) || 'dashboard-aprovacoes';
   });
 
-  const [members, setMembers] = useState<Member[]>(() => {
-    const saved = localStorage.getItem('familyflow_members');
-    if (!saved) return INITIAL_MEMBERS;
-    try {
-      const parsed: Member[] = JSON.parse(saved);
-      return parsed.map((m) => {
-        let cleanPin = m.pin;
-        // If it was stored as a 64-character SHA-256 hash, convert back to readable default PIN
-        if (cleanPin && /^[a-f0-9]{64}$/i.test(cleanPin)) {
-          if (m.id === 'heitor') cleanPin = '1010';
-          else if (m.id === 'mirella') cleanPin = '2020';
-          else if (m.role === 'parent') cleanPin = '1234';
-          else cleanPin = '1010';
-        }
-        return {
-          ...m,
-          pin: cleanPin || (m.role === 'parent' ? '1234' : m.id === 'mirella' ? '2020' : '1010')
-        };
-      });
-    } catch {
-      return INITIAL_MEMBERS;
-    }
-  });
-
-  const [tasks, setTasks] = useState<RoutineTask[]>(() => {
-    const saved = localStorage.getItem('familyflow_tasks');
-    return saved ? JSON.parse(saved) : INITIAL_TASKS;
-  });
-
-  const [rewards, setRewards] = useState<RewardItem[]>(() => {
-    const saved = localStorage.getItem('familyflow_rewards');
-    return saved ? JSON.parse(saved) : INITIAL_REWARDS;
-  });
-
-  const [transactions, setTransactions] = useState<Transaction[]>(() => {
-    const saved = localStorage.getItem('familyflow_transactions');
-    return saved ? JSON.parse(saved) : INITIAL_TRANSACTIONS;
-  });
-
-  const [settings, setSettings] = useState<FamilySettings>(() => {
-    const saved = localStorage.getItem('familyflow_settings');
-    return saved ? JSON.parse(saved) : INITIAL_SETTINGS;
-  });
-
-  const [appointments, setAppointments] = useState<Appointment[]>(() => {
-    const saved = localStorage.getItem('familyflow_appointments');
-    return saved ? JSON.parse(saved) : INITIAL_APPOINTMENTS;
-  });
-
-  const [notifications, setNotifications] = useState<AppNotification[]>(() => {
-    const saved = localStorage.getItem('familyflow_notifications');
-    return saved ? JSON.parse(saved) : INITIAL_NOTIFICATIONS;
-  });
+  // State starts empty so cloud fetch is the sole source of truth (never auto-seed demo profiles)
+  const [members, setMembers] = useState<Member[]>([]);
+  const [tasks, setTasks] = useState<RoutineTask[]>([]);
+  const [rewards, setRewards] = useState<RewardItem[]>([]);
+  const [transactions, setTransactions] = useState<Transaction[]>([]);
+  const [settings, setSettings] = useState<FamilySettings>(INITIAL_SETTINGS);
+  const [appointments, setAppointments] = useState<Appointment[]>([]);
+  const [notifications, setNotifications] = useState<AppNotification[]>([]);
 
   // UI state
   const [selectedChildId, setSelectedChildId] = useState<string>('all');
@@ -125,13 +86,41 @@ export default function App() {
   }, [currentUserId]);
 
   useEffect(() => localStorage.setItem('familyflow_tab', activeTab), [activeTab]);
-  useEffect(() => localStorage.setItem('familyflow_members', JSON.stringify(members)), [members]);
-  useEffect(() => localStorage.setItem('familyflow_tasks', JSON.stringify(tasks)), [tasks]);
-  useEffect(() => localStorage.setItem('familyflow_rewards', JSON.stringify(rewards)), [rewards]);
-  useEffect(() => localStorage.setItem('familyflow_transactions', JSON.stringify(transactions)), [transactions]);
-  useEffect(() => localStorage.setItem('familyflow_settings', JSON.stringify(settings)), [settings]);
-  useEffect(() => localStorage.setItem('familyflow_appointments', JSON.stringify(appointments)), [appointments]);
-  useEffect(() => localStorage.setItem('familyflow_notifications', JSON.stringify(notifications)), [notifications]);
+  useEffect(() => {
+    if (!isLoading) {
+      localStorage.setItem('familyflow_members', JSON.stringify(members));
+    }
+  }, [members, isLoading]);
+  useEffect(() => {
+    if (!isLoading) {
+      localStorage.setItem('familyflow_tasks', JSON.stringify(tasks));
+    }
+  }, [tasks, isLoading]);
+  useEffect(() => {
+    if (!isLoading) {
+      localStorage.setItem('familyflow_rewards', JSON.stringify(rewards));
+    }
+  }, [rewards, isLoading]);
+  useEffect(() => {
+    if (!isLoading) {
+      localStorage.setItem('familyflow_transactions', JSON.stringify(transactions));
+    }
+  }, [transactions, isLoading]);
+  useEffect(() => {
+    if (!isLoading) {
+      localStorage.setItem('familyflow_settings', JSON.stringify(settings));
+    }
+  }, [settings, isLoading]);
+  useEffect(() => {
+    if (!isLoading) {
+      localStorage.setItem('familyflow_appointments', JSON.stringify(appointments));
+    }
+  }, [appointments, isLoading]);
+  useEffect(() => {
+    if (!isLoading) {
+      localStorage.setItem('familyflow_notifications', JSON.stringify(notifications));
+    }
+  }, [notifications, isLoading]);
 
   // Sync theme color dynamically across root CSS variables
   useEffect(() => {
@@ -140,50 +129,167 @@ export default function App() {
     document.documentElement.style.setProperty('--color-primary', color);
   }, [settings.themeColor]);
 
-  // Derived state
-  const currentUser = members.find(m => m.id === currentUserId);
-  const isParent = currentUser?.role === 'parent';
-
-  // Supabase Hydration and One-Time Migration
+  // Supabase Hydration (Source of Truth) — with hard safety timeout to guarantee preview never hangs
   useEffect(() => {
-    async function initSupabase() {
-      if (!isSupabaseConfigured()) return;
-      const familyId = getStoredFamilyId();
-      const hasMigrated = localStorage.getItem('familyflow_migrated_to_supabase');
+    let isMounted = true;
 
-      if (!hasMigrated) {
-        const result = await migrateLocalStorageToSupabase(familyId, {
-          members,
-          tasks,
-          rewards,
-          transactions,
-          settings,
-          appointments,
-          notifications
-        });
-        if (result.success) {
-          showToast('Nuvem Supabase Conectada! ☁️', 'Dados importados com sucesso para o banco de dados Supabase.', 'cloud_done');
-        }
+    // Hard fallback safety timer (maximum 3.5 seconds loading time)
+    const fallbackTimer = setTimeout(() => {
+      if (isMounted) {
+        setIsLoading(false);
       }
+    }, 3500);
 
+    async function initData() {
       try {
-        const cloudData = await loadFamilyDataFromSupabase(familyId);
-        if (cloudData && cloudData.members && cloudData.members.length > 0) {
-          setMembers(cloudData.members);
-          setTasks(cloudData.tasks);
-          setRewards(cloudData.rewards);
-          setTransactions(cloudData.transactions);
-          setSettings(cloudData.settings);
-          setAppointments(cloudData.appointments);
-          setNotifications(cloudData.notifications);
+        if (isSupabaseConfigured()) {
+          const familyId = getStoredFamilyId();
+
+          // 3-second timeout race to guarantee quick responsiveness
+          const timeoutPromise = new Promise<null>((resolve) =>
+            setTimeout(() => resolve(null), 3000)
+          );
+
+          const fetchPromise = async () => {
+            await ensureFamilyExists(familyId, 'Rotinas da Família');
+            return await loadFamilyDataFromSupabase(familyId);
+          };
+
+          const cloudData = await Promise.race([fetchPromise(), timeoutPromise]);
+
+          if (!isMounted) return;
+
+          if (cloudData && cloudData.members && cloudData.members.length > 0) {
+            const uniqueMembers = deduplicateMembers(cloudData.members || []);
+            setMembers(uniqueMembers);
+            setTasks(cloudData.tasks || []);
+            setRewards(cloudData.rewards || []);
+            setTransactions(cloudData.transactions || []);
+            setSettings(cloudData.settings || INITIAL_SETTINGS);
+            setAppointments(cloudData.appointments || []);
+            setNotifications(cloudData.notifications || []);
+
+            const savedUserId = localStorage.getItem('familyflow_user');
+            if (savedUserId && uniqueMembers.some((m) => m.id === savedUserId)) {
+              setCurrentUserId(savedUserId);
+            } else {
+              setCurrentUserId(null);
+            }
+          } else {
+            // Check local fallback
+            const savedMembers = localStorage.getItem('familyflow_members');
+            if (savedMembers) {
+              try {
+                const parsed = deduplicateMembers(JSON.parse(savedMembers));
+                setMembers(parsed);
+                const savedUserId = localStorage.getItem('familyflow_user');
+                if (savedUserId && parsed.some((m) => m.id === savedUserId)) {
+                  setCurrentUserId(savedUserId);
+                } else {
+                  setCurrentUserId(null);
+                }
+              } catch {
+                setMembers([]);
+                setCurrentUserId(null);
+              }
+            } else {
+              setMembers([]);
+              setCurrentUserId(null);
+            }
+
+            const savedTasks = localStorage.getItem('familyflow_tasks');
+            if (savedTasks) {
+              try { setTasks(JSON.parse(savedTasks)); } catch {}
+            }
+            const savedRewards = localStorage.getItem('familyflow_rewards');
+            if (savedRewards) {
+              try { setRewards(JSON.parse(savedRewards)); } catch {}
+            }
+            const savedTransactions = localStorage.getItem('familyflow_transactions');
+            if (savedTransactions) {
+              try { setTransactions(JSON.parse(savedTransactions)); } catch {}
+            }
+            const savedSettings = localStorage.getItem('familyflow_settings');
+            if (savedSettings) {
+              try { setSettings(JSON.parse(savedSettings)); } catch {}
+            }
+            const savedAppointments = localStorage.getItem('familyflow_appointments');
+            if (savedAppointments) {
+              try { setAppointments(JSON.parse(savedAppointments)); } catch {}
+            }
+            const savedNotifications = localStorage.getItem('familyflow_notifications');
+            if (savedNotifications) {
+              try { setNotifications(JSON.parse(savedNotifications)); } catch {}
+            }
+          }
+        } else {
+          // Offline / Unconfigured fallback: load from localStorage
+          const savedMembers = localStorage.getItem('familyflow_members');
+          if (savedMembers) {
+            try {
+              const parsed = deduplicateMembers(JSON.parse(savedMembers));
+              setMembers(parsed);
+              const savedUserId = localStorage.getItem('familyflow_user');
+              if (savedUserId && parsed.some((m) => m.id === savedUserId)) {
+                setCurrentUserId(savedUserId);
+              } else {
+                setCurrentUserId(null);
+              }
+            } catch {
+              setMembers([]);
+              setCurrentUserId(null);
+            }
+          } else {
+            setMembers([]);
+            setCurrentUserId(null);
+          }
+
+          const savedTasks = localStorage.getItem('familyflow_tasks');
+          if (savedTasks) {
+            try { setTasks(JSON.parse(savedTasks)); } catch {}
+          }
+          const savedRewards = localStorage.getItem('familyflow_rewards');
+          if (savedRewards) {
+            try { setRewards(JSON.parse(savedRewards)); } catch {}
+          }
+          const savedTransactions = localStorage.getItem('familyflow_transactions');
+          if (savedTransactions) {
+            try { setTransactions(JSON.parse(savedTransactions)); } catch {}
+          }
+          const savedSettings = localStorage.getItem('familyflow_settings');
+          if (savedSettings) {
+            try { setSettings(JSON.parse(savedSettings)); } catch {}
+          }
+          const savedAppointments = localStorage.getItem('familyflow_appointments');
+          if (savedAppointments) {
+            try { setAppointments(JSON.parse(savedAppointments)); } catch {}
+          }
+          const savedNotifications = localStorage.getItem('familyflow_notifications');
+          if (savedNotifications) {
+            try { setNotifications(JSON.parse(savedNotifications)); } catch {}
+          }
         }
       } catch (err) {
-        console.warn('Erro ao carregar dados do Supabase:', err);
+        console.error('Erro na inicialização dos dados da família:', err);
+      } finally {
+        if (isMounted) {
+          clearTimeout(fallbackTimer);
+          setIsLoading(false);
+        }
       }
     }
 
-    initSupabase();
+    initData();
+
+    return () => {
+      isMounted = false;
+      clearTimeout(fallbackTimer);
+    };
   }, []);
+
+  // Derived state
+  const currentUser = members.find(m => m.id === currentUserId);
+  const isParent = currentUser?.role === 'parent';
 
   const handleMigrateToSupabase = async () => {
     const familyId = getStoredFamilyId();
@@ -250,7 +356,7 @@ export default function App() {
   const handleAddAppointment = (apptData: Omit<Appointment, 'id' | 'status'>) => {
     const newAppt: Appointment = {
       ...apptData,
-      id: `appt-${Date.now()}`,
+      id: generateUUID(),
       status: 'pending',
       createdBy: currentUserId || 'system'
     };
@@ -310,8 +416,8 @@ export default function App() {
     const timeStr = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
     const targetMember = members.find((m) => m.id === targetTask.assigneeId);
     
-    setTransactions((prev) => [{
-      id: `tx-${Date.now()}`,
+    const newTx: Transaction = {
+      id: generateUUID(),
       date: new Date().toLocaleDateString('pt-BR'),
       time: timeStr,
       memberId: targetTask.assigneeId,
@@ -320,7 +426,9 @@ export default function App() {
       description: targetTask.title,
       category: 'Rotina Aprovada',
       balanceAfter: (targetMember?.pointsBalance || 0) + pointsToAdd
-    }, ...prev]);
+    };
+    setTransactions((prev) => [newTx, ...prev]);
+    syncTransactionToSupabase(newTx);
 
     showToast('Atividade Aprovada!', `+${pointsToAdd} ${settings.currencyName} para ${targetMember?.name || 'Filho'}.`, 'verified');
   };
@@ -328,6 +436,9 @@ export default function App() {
   const handleRejectTask = (taskId: string, feedback?: string) => {
     const targetTask = tasks.find((t) => t.id === taskId);
     setTasks((prev) => prev.map((t) => t.id === taskId ? { ...t, status: 'rejected', feedback: feedback || 'Rejeitado para revisão' } : t));
+    if (targetTask) {
+      syncTaskToSupabase({ ...targetTask, status: 'rejected', feedback: feedback || 'Rejeitado para revisão' });
+    }
     showToast('Atividade Rejeitada', `Orientação enviada para o responsável pela tarefa.`, 'cancel');
   };
 
@@ -349,8 +460,8 @@ export default function App() {
       if (memIndex !== -1) {
         updatedMembers[memIndex].pointsBalance += task.basePoints;
         updatedMembers[memIndex].pointsEarnedTotal += task.basePoints;
-        newTransactions.push({
-          id: `tx-${Date.now()}-${task.id}`,
+        const tx: Transaction = {
+          id: generateUUID(),
           date: new Date().toLocaleDateString('pt-BR'),
           time: timeStr,
           memberId: task.assigneeId,
@@ -359,8 +470,11 @@ export default function App() {
           description: task.title,
           category: 'Aprovação em Lote',
           balanceAfter: updatedMembers[memIndex].pointsBalance
-        });
+        };
+        newTransactions.push(tx);
+        syncTransactionToSupabase(tx);
       }
+      syncTaskToSupabase({ ...task, status: 'approved' });
     });
 
     setTasks((prev) => prev.map((t) => (t.status === 'pending' && !t.isDelayed ? { ...t, status: 'approved' } : t)));
@@ -370,7 +484,14 @@ export default function App() {
   };
 
   const handleDeliverReward = (rewardId: string) => {
-    setRewards((prev) => prev.map((r) => r.id === rewardId ? { ...r, status: 'delivered', deliveredAt: 'Hoje pelo Pai Admin', deliveredBy: 'Pai Admin' } : r));
+    setRewards((prev) => prev.map((r) => {
+      if (r.id === rewardId) {
+        const updated = { ...r, status: 'delivered' as const, deliveredAt: 'Hoje pelo Pai Admin', deliveredBy: 'Pai Admin' };
+        syncRewardToSupabase(updated);
+        return updated;
+      }
+      return r;
+    }));
     showToast('Recompensa Entregue!', 'O item foi marcado como entregue fisicamente com sucesso.', 'celebration');
   };
 
@@ -385,12 +506,18 @@ export default function App() {
     }
 
     const newBalance = member.pointsBalance - reward.cost;
-    setMembers((prev) => prev.map((m) => m.id === memberId ? { ...m, pointsBalance: newBalance, pointsSpentTotal: m.pointsSpentTotal + reward.cost } : m));
-    setRewards((prev) => prev.map((r) => r.id === rewardId ? { ...r, status: 'pending_delivery', requestedBy: memberId, requestedAt: 'Hoje' } : r));
+    const updatedMember = { ...member, pointsBalance: newBalance, pointsSpentTotal: member.pointsSpentTotal + reward.cost };
+    const updatedReward = { ...reward, status: 'pending_delivery' as const, requestedBy: memberId, requestedAt: 'Hoje' };
+
+    setMembers((prev) => prev.map((m) => m.id === memberId ? updatedMember : m));
+    setRewards((prev) => prev.map((r) => r.id === rewardId ? updatedReward : r));
+
+    syncMemberToSupabase(updatedMember);
+    syncRewardToSupabase(updatedReward);
 
     const timeStr = `${String(new Date().getHours()).padStart(2, '0')}:${String(new Date().getMinutes()).padStart(2, '0')}`;
-    setTransactions((prev) => [{
-      id: `tx-redeem-${Date.now()}`,
+    const newTx: Transaction = {
+      id: generateUUID(),
       date: new Date().toLocaleDateString('pt-BR'),
       time: timeStr,
       memberId: memberId,
@@ -399,18 +526,24 @@ export default function App() {
       description: `Resgate: ${reward.title}`,
       category: 'Loja de Incentivo',
       balanceAfter: newBalance
-    }, ...prev]);
+    };
+    setTransactions((prev) => [newTx, ...prev]);
+    syncTransactionToSupabase(newTx);
 
     showToast('Resgate Solicitado!', `${reward.title} agora está na fila de entrega.`, 'shopping_bag');
   };
 
   const handleAddManualBonus = (memberId: string, amount: number, reason: string) => {
-    setMembers((prev) => prev.map((m) => m.id === memberId ? { ...m, pointsBalance: m.pointsBalance + amount, pointsEarnedTotal: m.pointsEarnedTotal + amount } : m));
     const targetMember = members.find((m) => m.id === memberId);
+    if (!targetMember) return;
+
+    const updatedMember = { ...targetMember, pointsBalance: targetMember.pointsBalance + amount, pointsEarnedTotal: targetMember.pointsEarnedTotal + amount };
+    setMembers((prev) => prev.map((m) => m.id === memberId ? updatedMember : m));
+    syncMemberToSupabase(updatedMember);
+
     const timeStr = `${String(new Date().getHours()).padStart(2, '0')}:${String(new Date().getMinutes()).padStart(2, '0')}`;
-    
-    setTransactions((prev) => [{
-      id: `tx-bonus-${Date.now()}`,
+    const newTx: Transaction = {
+      id: generateUUID(),
       date: new Date().toLocaleDateString('pt-BR'),
       time: timeStr,
       memberId: memberId,
@@ -419,16 +552,18 @@ export default function App() {
       description: `Bônus: ${reason}`,
       category: 'Bônus Educativo',
       balanceAfter: (targetMember?.pointsBalance || 0) + amount
-    }, ...prev]);
+    };
+    setTransactions((prev) => [newTx, ...prev]);
+    syncTransactionToSupabase(newTx);
   };
 
   const handleAddNewActivity = (newTaskData: any) => {
     const taskCount = tasks.length + 1;
     const newTask: RoutineTask = {
       ...newTaskData,
-      id: `card-reg-${1080 + taskCount}`,
-      regCode: `#REG-${1080 + taskCount}`,
-      taskCode: `TAR-00${taskCount}`,
+      id: generateUUID(),
+      regCode: `#REG-${Math.floor(1000 + Math.random() * 9000)}`,
+      taskCode: `TAR-${String(taskCount).padStart(3, '0')}`,
       status: 'pending',
       executedAt: '18:00',
       isDelayed: false,
@@ -447,42 +582,44 @@ export default function App() {
   const handleAddNewReward = (rewardData: Omit<RewardItem, 'id' | 'status'>) => {
     const newReward: RewardItem = {
       ...rewardData,
-      id: `rew-${Date.now()}`,
+      id: generateUUID(),
       status: 'available'
     };
     setRewards((prev) => [...prev, newReward]);
     syncRewardToSupabase(newReward);
   };
 
-  const handleResetData = () => {
+  const handleResetData = async () => {
     localStorage.clear();
-    setMembers(INITIAL_MEMBERS);
-    setTasks(INITIAL_TASKS);
-    setRewards(INITIAL_REWARDS);
-    setTransactions(INITIAL_TRANSACTIONS);
+    setMembers([]);
+    setTasks([]);
+    setRewards([]);
+    setTransactions([]);
     setSettings(INITIAL_SETTINGS);
-    setAppointments(INITIAL_APPOINTMENTS);
-    setNotifications(INITIAL_NOTIFICATIONS);
+    setAppointments([]);
+    setNotifications([]);
+    setCurrentUserId(null);
     setActiveTab('dashboard-aprovacoes');
-    showToast('Dados Restaurados', 'O aplicativo foi reinicializado com as rotinas padrão.');
+    await wipeEntireFamilyFromSupabase();
+    showToast('Dados Zerados', 'A família foi reinicializada do zero. Cadastre o primeiro administrador.', 'restart_alt');
   };
 
-  const handleClearAllTestData = () => {
+  const handleClearAllTestData = async () => {
     setTasks([]);
     setRewards([]);
     setTransactions([]);
     setAppointments([]);
     setNotifications([]);
-    localStorage.setItem('familyflow_tasks', JSON.stringify([]));
-    localStorage.setItem('familyflow_rewards', JSON.stringify([]));
-    localStorage.setItem('familyflow_transactions', JSON.stringify([]));
-    localStorage.setItem('familyflow_appointments', JSON.stringify([]));
-    localStorage.setItem('familyflow_notifications', JSON.stringify([]));
-    clearAllTestDataFromSupabase();
-    showToast('Sistema Limpo!', 'Todos os dados de teste foram removidos. Pronto para cadastrar novas rotinas e dados do zero!', 'cleaning_services');
+    localStorage.removeItem('familyflow_tasks');
+    localStorage.removeItem('familyflow_rewards');
+    localStorage.removeItem('familyflow_transactions');
+    localStorage.removeItem('familyflow_appointments');
+    localStorage.removeItem('familyflow_notifications');
+    await clearAllTestDataFromSupabase();
+    showToast('Sistema Limpo!', 'Todos os dados de atividades e prêmios foram removidos da nuvem.', 'cleaning_services');
   };
 
-  const handleWipeAllToRegisterFromScratch = () => {
+  const handleWipeAllToRegisterFromScratch = async () => {
     localStorage.clear();
     setTasks([]);
     setRewards([]);
@@ -491,8 +628,8 @@ export default function App() {
     setNotifications([]);
     setMembers([]);
     setCurrentUserId(null);
-    wipeEntireFamilyFromSupabase();
-    showToast('Sistema Zerado', 'Todos os dados foram excluídos. Crie a sua família para começar.', 'restart_alt');
+    await wipeEntireFamilyFromSupabase();
+    showToast('Sistema Zerado', 'Todos os dados foram excluídos da nuvem e do dispositivo.', 'restart_alt');
   };
 
   const handleUpdateTask = (updatedTask: RoutineTask) => {
@@ -517,10 +654,17 @@ export default function App() {
   };
 
   const handleRegisterMember = async (newMemberData: Omit<Member, 'id' | 'pointsBalance' | 'pointsEarnedTotal' | 'pointsSpentTotal' | 'level' | 'badge' | 'weeklyConsistency' | 'streakDays'>) => {
+    const cleanEmail = newMemberData.email?.trim().toLowerCase();
+    if (cleanEmail && cleanEmail !== 'sem e-mail' && members.some(m => m.email && m.email.trim().toLowerCase() === cleanEmail)) {
+      showToast('E-mail já existente', 'Já existe um membro cadastrado com este e-mail nesta família.', 'warning');
+      return;
+    }
+
     const rawPin = newMemberData.pin || (newMemberData.role === 'parent' ? '1234' : '1010');
     const newMember: Member = {
       ...newMemberData,
-      id: `member-${Date.now()}`,
+      id: generateUUID(),
+      email: cleanEmail || `${newMemberData.name.trim().toLowerCase().replace(/\s+/g, '')}@familia.com`,
       pin: rawPin,
       pointsBalance: 0,
       pointsEarnedTotal: 0,
@@ -530,16 +674,23 @@ export default function App() {
       weeklyConsistency: 0,
       streakDays: 0
     };
-    setMembers(prev => [...prev, newMember]);
+    setMembers(prev => deduplicateMembers([...prev, newMember]));
     syncMemberToSupabase(newMember);
     setCurrentUserId(newMember.id);
   };
 
   const handleAddMember = async (newMemberData: Omit<Member, 'id' | 'pointsBalance' | 'pointsEarnedTotal' | 'pointsSpentTotal' | 'level' | 'badge' | 'weeklyConsistency' | 'streakDays'>) => {
+    const cleanEmail = newMemberData.email?.trim().toLowerCase();
+    if (cleanEmail && cleanEmail !== 'sem e-mail' && members.some(m => m.email && m.email.trim().toLowerCase() === cleanEmail)) {
+      showToast('E-mail já cadastrado', 'Já existe um membro com este e-mail nesta família.', 'warning');
+      return;
+    }
+
     const rawPin = newMemberData.pin || (newMemberData.role === 'parent' ? '1234' : '1010');
     const newMember: Member = {
       ...newMemberData,
-      id: `member-${Date.now()}`,
+      id: generateUUID(),
+      email: cleanEmail || `${newMemberData.name.trim().toLowerCase().replace(/\s+/g, '')}@familia.com`,
       pin: rawPin,
       pointsBalance: 0,
       pointsEarnedTotal: 0,
@@ -549,11 +700,17 @@ export default function App() {
       weeklyConsistency: 0,
       streakDays: 0
     };
-    setMembers(prev => [...prev, newMember]);
+    setMembers(prev => deduplicateMembers([...prev, newMember]));
     syncMemberToSupabase(newMember);
   };
 
   const handleUpdateMember = async (memberId: string, updates: Partial<Member>) => {
+    const cleanEmail = updates.email?.trim().toLowerCase();
+    if (cleanEmail && cleanEmail !== 'sem e-mail' && members.some(m => m.id !== memberId && m.email && m.email.trim().toLowerCase() === cleanEmail)) {
+      showToast('E-mail já existente', 'Outro membro já possui este e-mail cadastrado.', 'warning');
+      return;
+    }
+
     setMembers(prev => {
       const updated = prev.map(m => m.id === memberId ? { ...m, ...updates } : m);
       const target = updated.find(m => m.id === memberId);
@@ -574,6 +731,38 @@ export default function App() {
     setSettings(newSettings);
     syncSettingsToSupabase(newSettings);
   };
+
+  // Loading Screen while fetching Supabase source of truth
+  if (isLoading) {
+    return (
+      <div className="min-h-screen bg-[#f7f9fb] flex flex-col items-center justify-center p-4">
+        <div className="bg-white rounded-3xl p-8 max-w-sm w-full shadow-lg border border-[#e0e3e5] flex flex-col items-center text-center space-y-4">
+          <div
+            className="w-14 h-14 rounded-2xl flex items-center justify-center shadow-md animate-pulse"
+            style={{ backgroundColor: 'var(--theme-color, #081534)' }}
+          >
+            <span className="material-symbols-outlined text-white text-3xl">family_restroom</span>
+          </div>
+          <div className="space-y-1">
+            <h2 className="text-base font-bold text-[#191c1e]">Carregando Rotinas da Família</h2>
+            <p className="text-xs text-[#76777f]">Sincronizando dados com a nuvem Supabase...</p>
+          </div>
+          <div
+            className="w-8 h-8 border-3 border-[#e0e3e5] rounded-full animate-spin"
+            style={{ borderTopColor: 'var(--theme-color, #081534)' }}
+          ></div>
+
+          <button
+            type="button"
+            onClick={() => setIsLoading(false)}
+            className="pt-2 text-xs font-bold text-[#45464e] hover:text-[#191c1e] hover:underline cursor-pointer"
+          >
+            Continuar sem aguardar
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   if (!currentUser) {
     return (

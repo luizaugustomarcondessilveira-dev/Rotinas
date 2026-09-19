@@ -27,6 +27,48 @@ export const isSupabaseConfigured = (): boolean => {
 const FAMILY_ID_KEY = 'familyflow_supabase_family_id';
 const DEFAULT_FAMILY_ID = 'a0000000-0000-0000-0000-000000000001';
 
+/**
+ * Generates a stable UUID v4
+ */
+export function generateUUID(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+    const r = (Math.random() * 16) | 0;
+    const v = c === 'x' ? r : (r & 0x3) | 0x8;
+    return v.toString(16);
+  });
+}
+
+/**
+ * Deduplicates members by ID and normalized email to guarantee data integrity
+ */
+export function deduplicateMembers(rawMembers: Member[]): Member[] {
+  const seenIds = new Set<string>();
+  const seenEmails = new Set<string>();
+  const result: Member[] = [];
+
+  for (const m of rawMembers) {
+    if (!m || !m.id) continue;
+    if (seenIds.has(m.id)) continue;
+
+    const emailNorm = (m.email || '').trim().toLowerCase();
+    if (emailNorm && emailNorm !== 'sem e-mail' && seenEmails.has(emailNorm)) {
+      // Avoid duplicate profiles with the exact same email in the same family
+      continue;
+    }
+
+    seenIds.add(m.id);
+    if (emailNorm && emailNorm !== 'sem e-mail') {
+      seenEmails.add(emailNorm);
+    }
+    result.push(m);
+  }
+
+  return result;
+}
+
 export const getStoredFamilyId = (): string => {
   let id = localStorage.getItem(FAMILY_ID_KEY);
   if (!id) {
@@ -62,11 +104,16 @@ export async function ensureFamilyExists(familyId: string, familyName: string = 
   if (!supabase) return;
 
   try {
-    const { data: existing } = await supabase
+    const { data: existing, error: selectErr } = await supabase
       .from('families')
       .select('id')
       .eq('id', familyId)
       .maybeSingle();
+
+    if (selectErr) {
+      console.warn('Aviso ao consultar família no Supabase:', selectErr);
+      return;
+    }
 
     if (!existing) {
       const { error } = await supabase.from('families').insert({
@@ -94,14 +141,23 @@ export interface FullFamilyData {
 }
 
 /**
- * Loads all state for the current family from Supabase
+ * Loads all state for the current family from Supabase (Source of Truth)
  */
 export async function loadFamilyDataFromSupabase(familyId: string = getStoredFamilyId()): Promise<FullFamilyData | null> {
   if (!supabase) return null;
 
   try {
+    const safeQuery = async (queryThenable: PromiseLike<any>): Promise<any> => {
+      try {
+        return await queryThenable;
+      } catch (err) {
+        console.warn('Erro em consulta individual do Supabase:', err);
+        return { data: null, error: err };
+      }
+    };
+
     const [
-      { data: familyRow },
+      { data: familyRow, error: famErr },
       { data: settingsRows },
       { data: memberRows },
       { data: taskRows },
@@ -110,19 +166,18 @@ export async function loadFamilyDataFromSupabase(familyId: string = getStoredFam
       { data: apptRows },
       { data: notifRows }
     ] = await Promise.all([
-      supabase.from('families').select('*').eq('id', familyId).maybeSingle(),
-      supabase.from('family_settings').select('*').eq('family_id', familyId).maybeSingle(),
-      supabase.from('members').select('*').eq('family_id', familyId),
-      supabase.from('routine_tasks').select('*').eq('family_id', familyId),
-      supabase.from('reward_items').select('*').eq('family_id', familyId),
-      supabase.from('transactions').select('*').eq('family_id', familyId).order('created_at', { ascending: false }),
-      supabase.from('appointments').select('*').eq('family_id', familyId),
-      supabase.from('notifications').select('*').eq('family_id', familyId).order('created_at', { ascending: false }),
+      safeQuery(supabase.from('families').select('*').eq('id', familyId).maybeSingle()),
+      safeQuery(supabase.from('family_settings').select('*').eq('family_id', familyId).maybeSingle()),
+      safeQuery(supabase.from('members').select('*').eq('family_id', familyId)),
+      safeQuery(supabase.from('routine_tasks').select('*').eq('family_id', familyId)),
+      safeQuery(supabase.from('reward_items').select('*').eq('family_id', familyId)),
+      safeQuery(supabase.from('transactions').select('*').eq('family_id', familyId).order('created_at', { ascending: false })),
+      safeQuery(supabase.from('appointments').select('*').eq('family_id', familyId)),
+      safeQuery(supabase.from('notifications').select('*').eq('family_id', familyId).order('created_at', { ascending: false })),
     ]);
 
-    // If no records found at all in Supabase for this family, return null
-    if (!familyRow && (!memberRows || memberRows.length === 0)) {
-      return null;
+    if (famErr && famErr.code !== 'PGRST116') {
+      console.warn('Aviso ao consultar família no Supabase:', famErr);
     }
 
     // Map Settings
@@ -150,7 +205,7 @@ export async function loadFamilyDataFromSupabase(familyId: string = getStoredFam
       menuLabels: {}
     };
 
-    // Map Members (preserving readable PIN for Admin display if cached locally)
+    // Map Members (preserving readable PIN if cached locally)
     let localPinMap: Record<string, string> = {};
     try {
       const savedMembers = localStorage.getItem('familyflow_members');
@@ -166,15 +221,14 @@ export async function loadFamilyDataFromSupabase(familyId: string = getStoredFam
       }
     } catch {}
 
-    const members: Member[] = (memberRows || []).map((m: any) => {
+    const rawMembers: Member[] = (memberRows || []).map((m: any) => {
       let pin = localPinMap[m.id];
       if (!pin) {
         if (m.pin_hash && !/^[a-f0-9]{64}$/i.test(m.pin_hash)) {
           pin = m.pin_hash;
-        } else if (m.id === 'heitor') pin = '1010';
-        else if (m.id === 'mirella') pin = '2020';
-        else if (m.role === 'parent') pin = '1234';
-        else pin = '1010';
+        } else {
+          pin = m.pin_hash || (m.role === 'parent' ? '1234' : '1010');
+        }
       }
       return {
         id: m.id,
@@ -193,6 +247,9 @@ export async function loadFamilyDataFromSupabase(familyId: string = getStoredFam
         pin
       };
     });
+
+    // Deduplicate members by ID and unique Email
+    const members: Member[] = deduplicateMembers(rawMembers);
 
     // Map Tasks
     const tasks: RoutineTask[] = (taskRows || []).map((t: any) => ({
@@ -219,9 +276,9 @@ export async function loadFamilyDataFromSupabase(familyId: string = getStoredFam
       feedback: t.feedback || '',
       penaltyApplied: Boolean(t.penalty_applied),
       penaltyPoints: t.penalty_points ?? 0,
-      photoRequested: Boolean(t.photo_requested),
-      hasPhotoEvidence: Boolean(t.has_photo_evidence),
-      photoEvidenceUrl: t.photo_evidence_url || undefined,
+      photoRequested: Boolean(t.photoRequested),
+      hasPhotoEvidence: Boolean(t.hasPhotoEvidence),
+      photoEvidenceUrl: t.photoEvidenceUrl || undefined,
       date: t.date || ''
     }));
 
